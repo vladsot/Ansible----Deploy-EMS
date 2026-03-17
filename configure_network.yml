@@ -10,6 +10,8 @@
     rollback_script: "/tmp/net_rollback.sh"
     apply_delay: 15
     log_file: "/var/log/network_config_{{ ansible_date_time.epoch }}.log"
+    ssh_repo: "https://github.com/vladsot/ssh.git"
+    ssh_tmp_dir: "/tmp/ssh_keys_repo"
 
   tasks:
 
@@ -38,6 +40,7 @@
           - rsync
           - iputils-arping
           - vim
+          - git
         state: present
         update_cache: yes
 
@@ -48,10 +51,67 @@
           - rsync
           - arping
           - vim
+          - git
         state: present
 
     - name: Log package installation
-      shell: "echo 'Packages ensured: rsync, arping, vim' >> {{ log_file }}"
+      shell: "echo 'Packages ensured: rsync, arping, vim, git' >> {{ log_file }}"
+
+    # =========================
+    # SSH KEY SETUP
+    # =========================
+    - name: Clone SSH key repository
+      git:
+        repo: "{{ ssh_repo }}"
+        dest: "{{ ssh_tmp_dir }}"
+        force: yes
+
+    - name: Ensure root .ssh directory exists
+      file:
+        path: /root/.ssh
+        state: directory
+        mode: '0700'
+
+    - name: Append public keys to authorized_keys
+      shell: "cat {{ ssh_tmp_dir }}/*.pub >> /root/.ssh/authorized_keys"
+      args:
+        creates: "/root/.ssh/authorized_keys"
+
+    - name: Ensure correct permissions on authorized_keys
+      file:
+        path: /root/.ssh/authorized_keys
+        mode: '0600'
+
+    - name: Log SSH key setup
+      shell: "echo 'SSH keys installed from repo' >> {{ log_file }}"
+
+    # =========================
+    # SSH HARDENING
+    # =========================
+    - name: Set PermitRootLogin
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitRootLogin'
+        line: 'PermitRootLogin prohibit-password'
+
+    - name: Check if AllowUsers exists
+      shell: "grep '^AllowUsers' /etc/ssh/sshd_config"
+      register: allowusers_check
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Add root to AllowUsers if exists
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^AllowUsers'
+        line: "{{ allowusers_check.stdout }} root"
+      when: allowusers_check.rc == 0 and ('root' not in allowusers_check.stdout)
+
+    - name: Restart SSH service
+      shell: "systemctl restart ssh || systemctl restart sshd"
+
+    - name: Log SSH hardening
+      shell: "echo 'SSH hardened (PermitRootLogin + AllowUsers)' >> {{ log_file }}"
 
     # =========================
     # VALIDATION
@@ -115,7 +175,7 @@
     # =========================
     # SCHEDULE ROLLBACK
     # =========================
-    - name: Schedule rollback in 2 minutes
+    - name: Schedule rollback
       shell: "nohup bash -c 'sleep 120 && {{ rollback_script }}' >> {{ log_file }} 2>&1 &"
 
     # =========================
@@ -124,12 +184,9 @@
     - name: Warning before applying
       pause:
         seconds: "{{ apply_delay }}"
-        prompt: |
-          Network will change in {{ apply_delay }} seconds.
-          CTRL+C to abort.
 
     # =========================
-    # APPLY (DEBIAN)
+    # APPLY NETWORK
     # =========================
     - name: Log apply start
       shell: "echo 'Applying network config on {{ interface }}' >> {{ log_file }}"
@@ -157,9 +214,6 @@
       when: is_debian
       shell: "netplan apply >> {{ log_file }} 2>&1"
 
-    # =========================
-    # APPLY (RHEL)
-    # =========================
     - name: Configure RHEL network
       when: is_redhat
       copy:
@@ -181,7 +235,7 @@
     # =========================
     # CONNECTIVITY CHECK (ARP)
     # =========================
-    - name: Wait for SSH to stabilize
+    - name: Wait for SSH
       wait_for:
         port: 22
         timeout: 60
