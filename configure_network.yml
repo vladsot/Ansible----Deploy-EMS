@@ -271,9 +271,12 @@
     # FINALIZE
     # =========================
     - name: Cancel rollback
-      shell: "pkill -f '{{ rollback_script }}' >> {{ log_file }} 2>&1 || true"
+      shell: "pkill -f '{{ rollback_script }}' >> {{ log_file }} 2>&1"
+      register: pkill_result
+      failed_when: false
+      changed_when: pkill_result.rc == 0
       when: arp_result.rc == 0
-
+      
     - name: Log success
       shell: "echo 'SUCCESS $(date)' >> {{ log_file }}"
       when: arp_result.rc == 0
