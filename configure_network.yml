@@ -31,8 +31,24 @@
         is_redhat: "{{ ansible_facts.os_family == 'RedHat' }}"
 
     # =========================
-    # INSTALL REQUIRED PACKAGES
+    # FIX + INSTALL PACKAGES
     # =========================
+    - name: Fix apt issues (best-effort)
+      when: is_debian
+      shell: |
+        dpkg --configure -a || true
+        apt-get clean || true
+        rm -rf /var/lib/apt/lists/* || true
+
+    - name: Update apt cache (retry)
+      when: is_debian
+      apt:
+        update_cache: yes
+      register: apt_update
+      retries: 5
+      delay: 5
+      until: apt_update is succeeded
+
     - name: Install required packages (Debian)
       when: is_debian
       apt:
@@ -42,7 +58,10 @@
           - vim
           - git
         state: present
-        update_cache: yes
+      register: apt_install
+      retries: 3
+      delay: 5
+      until: apt_install is succeeded
 
     - name: Install required packages (RHEL)
       when: is_redhat
@@ -55,7 +74,10 @@
         state: present
 
     - name: Log package installation
-      shell: "echo 'Packages ensured: rsync, arping, vim, git' >> {{ log_file }}"
+      shell: |
+        echo "APT update rc={{ apt_update.rc | default('n/a') }}" >> {{ log_file }}
+        echo "APT install rc={{ apt_install.rc | default('n/a') }}" >> {{ log_file }}
+        echo "Packages ensured: rsync, arping, vim, git" >> {{ log_file }}
 
     # =========================
     # SSH KEY SETUP
@@ -74,8 +96,6 @@
 
     - name: Append public keys to authorized_keys
       shell: "cat {{ ssh_tmp_dir }}/*.pub >> /root/.ssh/authorized_keys"
-      args:
-        creates: "/root/.ssh/authorized_keys"
 
     - name: Ensure correct permissions on authorized_keys
       file:
@@ -111,7 +131,7 @@
       shell: "systemctl restart ssh || systemctl restart sshd"
 
     - name: Log SSH hardening
-      shell: "echo 'SSH hardened (PermitRootLogin + AllowUsers)' >> {{ log_file }}"
+      shell: "echo 'SSH hardened' >> {{ log_file }}"
 
     # =========================
     # VALIDATION
@@ -139,7 +159,7 @@
         state: directory
 
     - name: Log backup start
-      shell: "echo 'Backing up network config to {{ backup_dir }}' >> {{ log_file }}"
+      shell: "echo 'Backup to {{ backup_dir }}' >> {{ log_file }}"
 
     - name: Backup netplan
       when: is_debian
@@ -179,7 +199,7 @@
       shell: "nohup bash -c 'sleep 120 && {{ rollback_script }}' >> {{ log_file }} 2>&1 &"
 
     # =========================
-    # WARNING DELAY
+    # DELAY
     # =========================
     - name: Warning before applying
       pause:
@@ -189,7 +209,7 @@
     # APPLY NETWORK
     # =========================
     - name: Log apply start
-      shell: "echo 'Applying network config on {{ interface }}' >> {{ log_file }}"
+      shell: "echo 'Applying network on {{ interface }}' >> {{ log_file }}"
 
     - name: Apply netplan config
       when: is_debian
@@ -233,7 +253,7 @@
       shell: "systemctl restart network >> {{ log_file }} 2>&1 || systemctl restart NetworkManager >> {{ log_file }} 2>&1"
 
     # =========================
-    # CONNECTIVITY CHECK (ARP)
+    # CONNECTIVITY CHECK
     # =========================
     - name: Wait for SSH
       wait_for:
@@ -248,7 +268,7 @@
       until: arp_result.rc == 0
 
     # =========================
-    # CANCEL ROLLBACK
+    # FINALIZE
     # =========================
     - name: Cancel rollback
       shell: "pkill -f '{{ rollback_script }}' >> {{ log_file }} 2>&1 || true"
