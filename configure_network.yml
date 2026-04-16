@@ -32,6 +32,16 @@
         is_redhat: "{{ ansible_facts.os_family == 'RedHat' }}"
 
     # =========================
+    # Delete jfrog repo if exists (IDEMPOTENT)
+    # =========================    
+    - name: Remove Fortinet Docker proxy repo from docker.list
+      become: yes
+      apt_repository:
+        repo: "deb https://jfrog.corp.fortinet.com/artifactory/apt-docker-proxy"
+        state: absent
+        filename: docker
+
+    # =========================
     # PACKAGE INSTALL (RESILIENT)
     # =========================
     - name: Fix apt issues
