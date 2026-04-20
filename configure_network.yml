@@ -192,6 +192,11 @@
     # =========================
     # NETPLAN CONFIG
     # =========================
+    - name: Ensure backup directory exists
+      file:
+        path: "{{ backup_dir }}/netplan"
+        state: directory
+        mode: '0755'
     - name: Backup netplan BEFORE change
       shell: "rsync -a /etc/netplan/ {{ backup_dir }}/netplan/"
 
