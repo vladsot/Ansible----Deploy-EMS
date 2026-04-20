@@ -40,6 +40,34 @@
         repo: "deb https://jfrog.corp.fortinet.com/artifactory/apt-docker-proxy"
         state: absent
         filename: docker
+    # =========================
+    # Verify there are no duplicate entries in the repo files
+    # =========================
+    - name: Find all APT source files
+      become: yes
+      find:
+        paths:
+          - /etc/apt/sources.list.d
+        patterns: "*.list"
+      register: apt_repo_files
+
+    - name: Include main sources.list
+      set_fact:
+        all_repo_files: "{{ apt_repo_files.files | map(attribute='path') | list + ['/etc/apt/sources.list'] }}"
+
+    - name: Check each repo file contains only one repo definition
+      become: yes
+      shell: |
+        grep -E '^\s*deb ' {{ item }} | wc -l
+      register: repo_line_counts
+      loop: "{{ all_repo_files }}"
+      changed_when: false
+
+    - name: Fail if any repo file has multiple repo definitions
+      fail:
+        msg: "Repo file {{ item.item }} contains {{ item.stdout }} repo definitions (expected 0 or 1)"
+      loop: "{{ repo_line_counts.results }}"
+      when: item.stdout | int > 1
 
     # =========================
     # PACKAGE INSTALL (RESILIENT)
