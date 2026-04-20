@@ -40,34 +40,85 @@
         repo: "deb https://jfrog.corp.fortinet.com/artifactory/apt-docker-proxy"
         state: absent
         filename: docker
+
     # =========================
-    # Verify there are no duplicate entries in the repo files
+    # Deduplicate sources.list entries (IDEMPOTENT)
     # =========================
+
+---
+- name: Configure network and clean APT sources
+  hosts: all
+  become: yes
+
+  vars:
+    apt_sources_dir: /etc/apt/sources.list.d
+    main_sources_file: /etc/apt/sources.list
+
+  tasks:
+
+    # --- Remove unwanted JFrog repo (if present anywhere) ---
+    - name: Remove jfrog docker proxy repo globally
+      lineinfile:
+        path: "{{ item }}"
+        regexp: '.*apt-docker-proxy.*'
+        state: absent
+      with_fileglob:
+        - "{{ main_sources_file }}"
+        - "{{ apt_sources_dir }}/*.list"
+      ignore_errors: yes
+
+    # --- Collect repo files ---
     - name: Find all APT source files
-      become: yes
       find:
-        paths:
-          - /etc/apt/sources.list.d
+        paths: "{{ apt_sources_dir }}"
         patterns: "*.list"
       register: apt_repo_files
 
-    - name: Include main sources.list
+    - name: Build full repo file list
       set_fact:
-        all_repo_files: "{{ apt_repo_files.files | map(attribute='path') | list + ['/etc/apt/sources.list'] }}"
+        all_repo_files: "{{ apt_repo_files.files | map(attribute='path') | list + [main_sources_file] }}"
 
-    - name: Check each repo file contains only one repo definition
-      become: yes
+    # --- Deduplicate repo lines (keep last occurrence) ---
+    - name: Deduplicate APT repo entries (keep last occurrence)
       shell: |
-        grep -E '^\s*deb ' {{ item }} | wc -l
+        file="{{ item }}"
+        tmp="$(mktemp)"
+
+        tac "$file" | awk '!seen[$0]++' | tac > "$tmp"
+
+        if ! cmp -s "$file" "$tmp"; then
+          mv "$tmp" "$file"
+        else
+          rm "$tmp"
+        fi
+      args:
+        executable: /bin/bash
+      loop: "{{ all_repo_files }}"
+      changed_when: false
+
+    # --- Validate: only 1 repo per file ---
+    - name: Count repo definitions per file
+      shell: |
+        grep -E '^\s*deb(-src)? ' {{ item }} | wc -l
       register: repo_line_counts
       loop: "{{ all_repo_files }}"
       changed_when: false
 
-    - name: Fail if any repo file has multiple repo definitions
+    - name: Fail if multiple repo definitions found
       fail:
         msg: "Repo file {{ item.item }} contains {{ item.stdout }} repo definitions (expected 0 or 1)"
       loop: "{{ repo_line_counts.results }}"
       when: item.stdout | int > 1
+
+    # --- Update apt cache after cleanup ---
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    # --- Example network task placeholder ---
+    - name: Placeholder - ensure network config applied
+      debug:
+        msg: "Network configuration would be applied here"
 
     # =========================
     # PACKAGE INSTALL (RESILIENT)
